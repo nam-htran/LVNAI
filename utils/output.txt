@@ -1,0 +1,1243 @@
+
+===== .\step1\check_enough_data.py =====
+from docx import Document
+import pandas as pd
+import os
+
+DOCX_FILE = "dataset/Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx"
+DOWNLOAD_DIR = "dataset/downloads"
+
+print(f"Đọc file Word: {DOCX_FILE}")
+doc = Document(DOCX_FILE)
+
+data = []
+for table in doc.tables:
+    for row in table.rows:
+        if len(row.cells) >= 3:
+            stt = row.cells[0].text.strip()
+            name = row.cells[1].text.strip()
+            so = row.cells[2].text.strip()
+            data.append([stt, name, so])
+
+laws = pd.DataFrame(data, columns=['STT', 'Tên Văn bản', 'Số/Văn bản'])
+print(f"Đọc được {len(laws)} dòng (bao gồm cả dòng rác)")
+
+exclude_keywords = [
+    "tên vb", 
+    "số hiệu", 
+    "văn bản còn hiệu lực", 
+    "văn bản bị sửa đổi", 
+    "văn bản hết hiệu lực", 
+    "văn bản chưa áp dụng"
+]
+
+def is_garbage(row):
+    text = (row['Tên Văn bản'] + " " + row['Số/Văn bản']).lower()
+    return any(k in text for k in exclude_keywords)
+
+laws_clean = laws[~laws.apply(is_garbage, axis=1)].copy()
+laws_clean.reset_index(drop=True, inplace=True)
+print(f"Sau khi lọc, còn {len(laws_clean)} dòng hợp lệ.\n")
+
+files = os.listdir(DOWNLOAD_DIR)
+files_clean = [os.path.splitext(f)[0].lower() for f in files]
+
+print(f"Thư mục downloads có {len(files_clean)} file.\n")
+
+def check_file_exist_by_so(row):
+    so = row['Số/Văn bản'].replace('/', '-').lower()
+    return any(so in f for f in files_clean)
+
+laws_clean['File có sẵn'] = laws_clean.apply(check_file_exist_by_so, axis=1)
+
+missing_files = laws_clean[~laws_clean['File có sẵn']]
+
+print("=== TỔNG HỢP KẾT QUẢ ===")
+print(laws_clean[['STT', 'Tên Văn bản', 'Số/Văn bản', 'File có sẵn']])
+print("\nCác luật chưa có file (nếu có):")
+print(missing_files[['STT', 'Tên Văn bản', 'Số/Văn bản']])
+
+os.makedirs("dataset/report", exist_ok=True)
+output_path = "dataset/report/check_result.csv"
+laws_clean.to_csv(output_path, index=False, encoding='utf-8-sig')
+print(f"\nĐã lưu báo cáo tại: {output_path}")
+
+
+===== .\step1\convert_doc_to_docx.py =====
+# file: convert_doc_to_docx.py
+import os
+import win32com.client as win32
+from tqdm import tqdm
+
+# --- CONFIG ---
+# Thư mục chứa các file .doc và .docx gốc
+SOURCE_DIR = os.path.abspath("dataset/downloads")
+# Thư mục mới để chứa tất cả các file sau khi đã được chuẩn hóa sang .docx
+TARGET_DIR = os.path.abspath("dataset/downloads_docx")
+
+def main():
+    """
+    Tự động chuyển đổi tất cả file .doc sang .docx bằng Microsoft Word.
+    Các file .docx sẵn có sẽ được sao chép qua.
+    """
+    if not os.path.exists(TARGET_DIR):
+        os.makedirs(TARGET_DIR)
+        print(f"Đã tạo thư mục mới: {TARGET_DIR}")
+
+    word = None
+    try:
+        # Khởi động ứng dụng Word chạy ngầm
+        word = win32.Dispatch("Word.Application")
+        word.Visible = False
+
+        all_files = os.listdir(SOURCE_DIR)
+        
+        # Lọc ra các file văn bản cần xử lý
+        doc_files = [f for f in all_files if f.lower().endswith(".doc") and not f.startswith('~')]
+        
+        print(f"\nBắt đầu chuyển đổi {len(doc_files)} file .doc sang .docx...")
+        for filename in tqdm(doc_files, desc="Converting .doc files"):
+            source_path = os.path.join(SOURCE_DIR, filename)
+            # Tạo tên file mới với đuôi .docx
+            target_filename = os.path.splitext(filename)[0] + ".docx"
+            target_path = os.path.join(TARGET_DIR, target_filename)
+
+            if os.path.exists(target_path):
+                continue # Bỏ qua nếu file đã được chuyển đổi
+
+            try:
+                doc = word.Documents.Open(source_path)
+                # FileFormat=16 tương ứng với định dạng .docx
+                doc.SaveAs(target_path, FileFormat=16)
+                doc.Close()
+            except Exception as e:
+                print(f"\nLỗi khi chuyển đổi file {filename}: {e}")
+        
+        # Sao chép các file .docx đã có sẵn
+        docx_files = [f for f in all_files if f.lower().endswith(".docx") and not f.startswith('~')]
+        print(f"\nBắt đầu sao chép {len(docx_files)} file .docx có sẵn...")
+        from shutil import copy2
+        for filename in tqdm(docx_files, desc="Copying .docx files"):
+            source_path = os.path.join(SOURCE_DIR, filename)
+            target_path = os.path.join(TARGET_DIR, filename)
+            if not os.path.exists(target_path):
+                 copy2(source_path, target_path)
+
+    finally:
+        # Đảm bảo ứng dụng Word luôn được đóng, kể cả khi có lỗi
+        if word:
+            word.Quit()
+
+    print("\n--- HOÀN TẤT CHUẨN HÓA ĐỊNH DẠNG ---")
+    print(f"Toàn bộ văn bản đã được lưu dưới dạng .docx tại thư mục: {TARGET_DIR}")
+
+if __name__ == "__main__":
+    main()
+
+===== .\step1\crawl_data.py =====
+import os
+import time
+import zipfile
+from xml.etree import ElementTree as ET
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+
+# --- CONFIG ---
+DOCX_FILE = r"dataset\Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx"
+DOWNLOAD_DIR = os.path.abspath("dataset/downloads")  # tải trực tiếp vào thư mục dataset
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# ---------- extract hyperlinks ----------
+def get_hyperlinks_from_docx(docx_path):
+    links = []
+    with zipfile.ZipFile(docx_path, 'r') as z:
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+        try:
+            rels_xml = z.read("word/_rels/document.xml.rels").decode("utf-8")
+        except KeyError:
+            rels_xml = None
+
+    rels = {}
+    if rels_xml:
+        root = ET.fromstring(rels_xml)
+        for rel in root:
+            rId = rel.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}Id") or rel.attrib.get("Id")
+            target = rel.attrib.get("Target")
+            if rId and target:
+                rels[rId] = target
+
+    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+          'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    doc_root = ET.fromstring(doc_xml)
+    for hyp in doc_root.findall('.//w:hyperlink', ns):
+        rid = hyp.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+        texts = [t.text for t in hyp.findall('.//w:t', ns) if t.text]
+        display = ''.join(texts)
+        url = rels.get(rid)
+        if url and "luatvietnam.vn" in url:  # chỉ lấy link luatvietnam
+            links.append((display, url))
+    return links
+
+# ---------- start Selenium Chrome mới với download folder riêng ----------
+def start_driver(download_dir):
+    chrome_options = Options()
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "directory_upgrade": True,
+        "safebrowsing.enabled": True
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
+
+# ---------- click các link DOC/DOCX trên trang ----------
+def try_click_vietnamese_links(driver):
+    anchors = driver.find_elements(By.CSS_SELECTOR, "div.download-vb a[href]")
+    clicked_any = False
+    for a in anchors:
+        href = a.get_attribute("href")
+        if not href or href.startswith("javascript:"):
+            continue
+        if any(ext in href.lower() for ext in [".doc", ".docx"]):
+            try:
+                driver.execute_script("window.open(arguments[0], '_blank');", href)
+                clicked_any = True
+                time.sleep(0.5)
+            except:
+                pass
+    return clicked_any
+
+# ---------- chờ download hoàn tất ----------
+def wait_for_active_downloads(download_folder, timeout=120):
+    t0 = time.time()
+    while True:
+        files = os.listdir(download_folder)
+        in_progress = [f for f in files if f.endswith(".crdownload") or f.endswith(".part")]
+        if not in_progress:
+            return
+        if time.time() - t0 > timeout:
+            print("Timeout chờ download hoàn tất.")
+            return
+        time.sleep(1)
+
+# ---------- main visit + download ----------
+def visit_and_download_links(driver, links):
+    for idx, (display, url) in enumerate(links, 1):
+        print(f"[{idx}/{len(links)}] Visiting: {display} -> {url}")
+        try:
+            driver.get(url)
+            time.sleep(1)
+            clicked = try_click_vietnamese_links(driver)
+            if clicked:
+                print("Đã click link VB tiếng Việt, chờ download...")
+                wait_for_active_downloads(DOWNLOAD_DIR)
+        except Exception as e:
+            print("Error xử lý link:", e)
+
+# ---------- main ----------
+def main():
+    links = get_hyperlinks_from_docx(DOCX_FILE)
+    print(f"Tìm thấy {len(links)} hyperlink.")
+
+    driver = start_driver(DOWNLOAD_DIR)
+
+    print("Mở Chrome xong. Vui lòng đăng nhập vào trang web nếu cần.")
+    input("Sau khi đăng nhập xong, nhấn Enter để tiếp tục tải file...")
+
+    try:
+        visit_and_download_links(driver, links)
+    finally:
+        print("Hoàn tất, giữ Chrome mở hoặc tắt tùy bạn.")
+        driver.quit()
+
+if __name__ == "__main__":
+    main()
+
+
+===== .\step1\create_vector_store.py =====
+# file: create_vector_store_v2.py
+import pandas as pd
+from langchain_community.document_loaders import DataFrameLoader
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from tqdm import tqdm
+
+# --- CONFIG ---
+PROCESSED_DATA_PATH = "dataset/result/rag_knowledge_base.csv"
+VECTOR_STORE_PATH = "vector_store/faiss_index_v2"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+def main():
+    print("Bắt đầu quá trình Indexing...")
+
+    try:
+        df = pd.read_csv(PROCESSED_DATA_PATH)
+        df = df.dropna(subset=['content'])
+        loader = DataFrameLoader(df, page_content_column="content")
+        documents = loader.load()
+        print(f"Đã load được {len(documents)} documents (Điều luật).")
+    except FileNotFoundError:
+        print(f"Lỗi: Không tìm thấy file {PROCESSED_DATA_PATH}. Hãy chạy script preprocess trước.")
+        return
+
+    print(f"Đang tải Embedding Model: {EMBEDDING_MODEL} (có thể mất thời gian ở lần đầu)...")
+    embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+    print("Bắt đầu tạo và lưu trữ Vector Store...")
+    vector_store = FAISS.from_documents(documents, embedding_model)
+
+    vector_store.save_local(VECTOR_STORE_PATH)
+    print(f"\nHoàn tất! Đã lưu Vector Store tại: {VECTOR_STORE_PATH}")
+
+if __name__ == "__main__":
+    main()
+
+===== .\step1\preprocess_law_data.py =====
+# file: preprocess_law_data.py (Phiên bản nâng cấp - chia theo Khoản)
+import os
+import re
+import pandas as pd
+from docx import Document
+from tqdm import tqdm
+
+# --- CONFIG ---
+DATA_DIR = "dataset/downloads_docx"
+OUTPUT_CSV = "dataset/result/rag_knowledge_base.csv" # Lưu vào file mới để so sánh
+
+def read_docx_text(file_path):
+    try:
+        doc = Document(file_path)
+        return '\n'.join([para.text for para in doc.paragraphs])
+    except Exception as e:
+        print(f"Lỗi khi đọc file {os.path.basename(file_path)}: {e}")
+        return ""
+
+def clean_raw_text(text):
+    text = re.sub(r'^\s*-\s*\d+\s*-\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*Trang \d+.*', '', text, flags=re.MULTILINE)
+    lines = text.split('\n')
+    cleaned_lines = [line for line in lines if not (len(line.strip()) < 100 and any(keyword in line for keyword in ["QUỐC HỘI", "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", "Văn bản hợp nhất"]) and line.isupper())]
+    text = '\n'.join(cleaned_lines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+def chunk_text(text, law_number_clean):
+    chunks = []
+    current_chapter = ""
+    current_section = ""
+    current_article_number = ""
+    current_article_content = ""
+
+    # Pattern để tìm Điều, Chương, Mục
+    structure_pattern = re.compile(
+        r"^(Chương [IVXLCDM\d]+.*?)\n|^(Mục \d+.*?)\n|^(Điều \d+[a-z]?\..*?)$",
+        re.MULTILINE | re.IGNORECASE
+    )
+    
+    # Tìm tất cả các cấu trúc (Chương, Mục, Điều)
+    matches = list(structure_pattern.finditer(text))
+    if not matches:
+        return []
+
+    for i, match in enumerate(matches):
+        start_pos = match.start()
+        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content_block = text[start_pos:end_pos].strip()
+
+        chapter_match = match.group(1)
+        section_match = match.group(2)
+        article_match = match.group(3)
+
+        if chapter_match:
+            current_chapter = chapter_match.strip()
+            current_section = "" 
+        elif section_match:
+            current_section = section_match.strip()
+        elif article_match:
+            # Khi gặp một Điều mới, xử lý Điều cũ
+            if current_article_number and current_article_content:
+                process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
+            
+            # Cập nhật thông tin cho Điều mới
+            current_article_number = article_match.strip()
+            current_article_content = content_block
+    
+    # Xử lý Điều cuối cùng trong file
+    if current_article_number and current_article_content:
+        process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
+        
+    return chunks
+
+def process_article(chunks, law_number, chapter, section, article_number_raw, article_content):
+    # Chuẩn hóa tên Điều để tạo ID
+    article_match_obj = re.match(r"^(Điều \d+[a-z]?)\.?", article_number_raw, re.IGNORECASE)
+    if not article_match_obj: return
+    article_number_normalized = article_match_obj.group(1).replace(" ", "-")
+    
+    # Pattern để chia nhỏ theo Khoản (vd: "1.", "2.", "a)")
+    clause_pattern = re.compile(r"^\s*(\d+\.|[a-z]\))\s", re.MULTILINE)
+    clauses = clause_pattern.split(article_content)
+    
+    # Nếu có các Khoản (độ dài của list > 1)
+    if len(clauses) > 2:
+        # Phần đầu tiên là tên Điều, bỏ qua
+        content_remainder = clauses[0]
+        i = 1
+        while i < len(clauses):
+            clause_number = clauses[i]
+            clause_content = clauses[i+1]
+            full_clause_content = f"{clause_number}{clause_content}".strip()
+            
+            # Tạo ID duy nhất cho Khoản
+            unique_id = f"{law_number}/{article_number_normalized}/khoan-{clause_number.replace('.', '').replace(')', '')}"
+            
+            chunks.append({
+                "article_id": unique_id,
+                "law_number": law_number.replace('-', '/'),
+                "chapter": chapter,
+                "section": section,
+                "article_number": article_number_raw,
+                "content": f"{article_number_raw}\n{full_clause_content}" # Giữ lại tên Điều cho ngữ cảnh
+            })
+            i += 2
+    else:
+        # Nếu Điều không có Khoản, giữ nguyên cả Điều
+        unique_id = f"{law_number}/{article_number_normalized}"
+        chunks.append({
+            "article_id": unique_id,
+            "law_number": law_number.replace('-', '/'),
+            "chapter": chapter,
+            "section": section,
+            "article_number": article_number_raw,
+            "content": article_content
+        })
+
+def main():
+    all_chunks = []
+    files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(".docx") and not f.startswith("~")]
+
+    for filename in tqdm(files, desc="Processing Law Documents"):
+        file_path = os.path.join(DATA_DIR, filename)
+        law_number_clean = os.path.splitext(filename)[0].replace('Luật-', '').replace('Bộ luật-', '')
+        
+        raw_text = read_docx_text(file_path)
+        if not raw_text: continue
+        
+        cleaned_text = clean_raw_text(raw_text)
+        chunks = chunk_text(cleaned_text, law_number_clean)
+        all_chunks.extend(chunks)
+
+    df = pd.DataFrame(all_chunks)
+    if not df.empty:
+        df = df[['article_id', 'law_number', 'chapter', 'section', 'article_number', 'content']]
+    
+    df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+    print(f"\n--- HOÀN TẤT XỬ LÝ NỘI DUNG ---")
+    print(f"Đã xử lý và lưu {len(df)} đoạn luật (chunks) tại: {OUTPUT_CSV}")
+
+if __name__ == "__main__":
+    main()
+
+===== .\step1\process_qa_finetuning_data.py =====
+# file: step1/process_qa_finetuning_data.py (PHIÊN BẢN CUỐI CÙNG)
+import json
+from datasets import load_dataset
+from tqdm import tqdm
+
+# --- CẤU HÌNH ---
+DATASET_NAME = "thangvip/vietnamese-legal-qa"
+OUTPUT_JSONL_PATH = "dataset/result/finetuning_data.jsonl"
+
+def main():
+    """
+    Tải bộ dữ liệu Hỏi-Đáp từ Hugging Face, "bóc tách" các cặp hỏi-đáp từ cột
+    'generated_qa_pairs' và chuyển đổi nó thành định dạng JSONL chuẩn cho SFTTrainer.
+    """
+    print(f"--- Bắt đầu xử lý dữ liệu fine-tuning từ '{DATASET_NAME}' ---")
+
+    try:
+        dataset = load_dataset(DATASET_NAME, split="train")
+        print(f"Tải dữ liệu thành công. Tổng cộng có {len(dataset)} điều luật gốc.")
+    except Exception as e:
+        print(f"LỖI: Không thể tải dữ liệu từ Hugging Face: {e}")
+        return
+
+    finetuning_data = []
+    skipped_pairs = 0
+    total_pairs = 0
+
+    # Lặp qua từng điều luật trong bộ dữ liệu
+    for row in tqdm(dataset, desc="Đang trích xuất các cặp Hỏi-Đáp"):
+        # Lấy ra danh sách các cặp QA từ cột 'generated_qa_pairs'
+        qa_pairs_list = row.get('generated_qa_pairs')
+
+        # Kiểm tra xem có phải là một danh sách hợp lệ và không rỗng không
+        if not isinstance(qa_pairs_list, list) or not qa_pairs_list:
+            continue
+
+        # Lặp qua từng cặp QA trong danh sách
+        for qa_pair in qa_pairs_list:
+            total_pairs += 1
+            # qa_pair là một dictionary, ví dụ: {'answer': '...', 'question': '...'}
+            question = qa_pair.get('question')
+            answer = qa_pair.get('answer')
+
+            # Bỏ qua các cặp có dữ liệu rỗng hoặc không đúng định dạng
+            if not question or not isinstance(question, str) or not question.strip() or \
+               not answer or not isinstance(answer, str) or not answer.strip():
+                skipped_pairs += 1
+                continue
+            
+            # Thêm cặp QA hợp lệ vào danh sách dữ liệu fine-tuning
+            # Context vẫn để trống vì chúng ta muốn dạy mô hình cách trả lời trực tiếp
+            finetuning_data.append({
+                "instruction": question,
+                "context": "", 
+                "response": answer
+            })
+
+    print("\n--- KẾT QUẢ XỬ LÝ ---")
+    print(f"Tổng số cặp Hỏi-Đáp được tìm thấy: {total_pairs}")
+    print(f"Đã xử lý và lưu thành công: {len(finetuning_data)} cặp Hỏi-Đáp")
+    if skipped_pairs > 0:
+        print(f"Số cặp bị bỏ qua do thiếu dữ liệu: {skipped_pairs}")
+
+    # --- LƯU RA FILE JSONL ---
+    with open(OUTPUT_JSONL_PATH, 'w', encoding='utf-8') as f:
+        for entry in finetuning_data:
+            json.dump(entry, f, ensure_ascii=False)
+            f.write('\n')
+            
+    print(f"\nĐã lưu thành công dữ liệu fine-tuning tại: '{OUTPUT_JSONL_PATH}'")
+    print("Bây giờ bạn có thể tiếp tục với bước fine-tuning.")
+
+if __name__ == "__main__":
+    main()
+
+===== .\step2\chatbot_rag_only.py =====
+# file: chatbot_rag_only.py (Phiên bản cuối cùng, sử dụng ContextualCompressionRetriever)
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from pathlib import Path
+# --- THAY ĐỔI 1: IMPORT ĐÚNG COMPONENT ---
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain_community.document_compressors import FlashrankRerank
+
+# --- CẤU HÌNH ---
+class Config:
+    DEBUG = True
+    VECTOR_STORE_PATH = "vector_store/faiss_index_v2" 
+    EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+    RERANKER_MODEL = "ms-marco-MiniLM-L-12-v2"
+    LLM_MODEL = "meta-llama/llama-3-8b-instruct"
+    CANDIDATES_TO_RETRIEVE = 20
+    TOP_N_AFTER_RERANK = 5
+
+# --- KIỂM TRA LỖI ---
+if not Path(Config.VECTOR_STORE_PATH).exists():
+    print(f"LỖI: Không tìm thấy thư mục Vector Store tại '{Config.VECTOR_STORE_PATH}'.")
+    print("Vui lòng chạy các script `preprocess_law_data.py` và `create_vector_store.py` trước.")
+    exit()
+
+# --- KHỞI TẠO CÁC THÀNH PHẦN ---
+load_dotenv()
+
+api_key = os.environ.get("OPENROUTER_API_KEY")
+if not api_key:
+    raise ValueError("LỖI: Biến môi trường OPENROUTER_API_KEY không được tìm thấy.")
+
+client = OpenAI(
+  base_url="https://openrouter.ai/api/v1",
+  api_key=api_key,
+)
+
+print("Đang tải Embedding Model và Vector Store...")
+embedding_model = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
+vector_store = FAISS.load_local(Config.VECTOR_STORE_PATH, embedding_model, allow_dangerous_deserialization=True)
+base_retriever = vector_store.as_retriever(search_kwargs={'k': Config.CANDIDATES_TO_RETRIEVE})
+print("Tải thành công!")
+
+print(f"Đang tải mô hình Reranker: {Config.RERANKER_MODEL}...")
+compressor = FlashrankRerank(top_n=Config.TOP_N_AFTER_RERANK, model=Config.RERANKER_MODEL)
+print("Tải Reranker thành công!")
+
+# --- THAY ĐỔI 2: TẠO MỘT COMPRESSION RETRIEVER DUY NHẤT ---
+# Đây là cách làm chính xác: bọc retriever và compressor lại với nhau.
+final_retriever = ContextualCompressionRetriever(
+    base_compressor=compressor, base_retriever=base_retriever
+)
+
+prompt_template = """Bạn là một trợ lý AI pháp lý chuyên nghiệp của Việt Nam.
+Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA HOÀN TOÀN vào các thông tin, ngữ cảnh được cung cấp dưới đây.
+
+**Ngữ cảnh (Các trích đoạn luật liên quan):**
+---
+{context}
+---
+
+**Câu hỏi của người dùng:**
+{question}
+
+**Hướng dẫn trả lời:**
+1.  Đọc kỹ ngữ cảnh và chỉ sử dụng thông tin từ đó để tổng hợp câu trả lời.
+2.  Nếu ngữ cảnh không chứa thông tin để trả lời, hãy nói rõ: "Dựa trên các văn bản luật được cung cấp, tôi không tìm thấy thông tin chính xác để trả lời câu hỏi này."
+3.  Trích dẫn nguồn một cách rõ ràng sau mỗi luận điểm bằng cách sử dụng metadata của ngữ cảnh, ví dụ: `[Nguồn: article_id]`.
+4.  Câu trả lời phải rõ ràng, mạch lạc, chuyên nghiệp và bằng tiếng Việt.
+
+**Câu trả lời của bạn:**
+"""
+
+def get_rag_response(query: str) -> str:
+    # --- THAY ĐỔI 3: GỌI RETRIEVER DUY NHẤT ĐÃ ĐƯỢC TỐI ƯU HÓA ---
+    print("Đang truy xuất và xếp hạng lại văn bản...")
+    reranked_docs = final_retriever.invoke(query)
+
+    if Config.DEBUG:
+        print("\n--- KẾT QUẢ TÌM KIẾM (SAU KHI RERANK) ---")
+        if not reranked_docs:
+            print("Không tìm thấy tài liệu nào sau khi rerank.")
+        else:
+            for i, doc in enumerate(reranked_docs):
+                score = doc.metadata.get('relevance_score', 'N/A')
+                print(f"[{i+1}] Nguồn: {doc.metadata.get('article_id', 'N/A')} (Điểm: {score})")
+                content_snippet = doc.page_content[:150].replace('\n', ' ')
+                print(f"    Nội dung: {content_snippet}...")
+        print("-------------------------------------------\n")
+
+    context_parts = [f"[Nguồn: {doc.metadata.get('article_id', 'Không rõ')}]\n{doc.page_content}" for doc in reranked_docs]
+    context = "\n\n".join(context_parts)
+    
+    prompt = prompt_template.format(context=context, question=query)
+    
+    print("Đang gửi prompt đến LLM để tạo câu trả lời...")
+    try:
+        response = client.chat.completions.create(
+            model=Config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"\n[Lỗi]: Đã có lỗi xảy ra khi gọi LLM: {e}"
+
+def main():
+    print("\n--- Chatbot Pháp luật Việt Nam (Correct LCEL Version) ---")
+    print(f"Sử dụng LLM: {Config.LLM_MODEL}")
+    print(f"Chế độ DEBUG: {'Bật' if Config.DEBUG else 'Tắt'}")
+    print("Gõ 'exit' để thoát.")
+    
+    while True:
+        query = input("\n[Bạn hỏi]: ")
+        if query.lower() == 'exit':
+            break
+        if not query.strip():
+            continue
+            
+        print("\nĐang xử lý yêu cầu...")
+        answer = get_rag_response(query)
+        print("\n[AI trả lời]:")
+        print(answer)
+
+if __name__ == "__main__":
+    main()
+
+===== DIRECTORY TREE =====
+./
+    dataset/
+        Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx
+        downloads/
+            Bộ luật-100-2015-QH13.doc
+            Bộ luật-101-2015-QH13.doc
+            Bộ luật-45-2019-QH14.docx
+            Bộ luật-91-2015-QH13.doc
+            Bộ luật-92-2015-QH13.docx
+            Bộ luật-95-2015-QH13.doc
+            Luật-01-2016-QH14.doc
+            Luật-01-2021-QH15.doc
+            Luật-02-2011-QH13.doc
+            Luật-02-2016-QH14.doc
+            Luật-02-2021-QH15.doc
+            Luật-03-2007-QH12.doc
+            Luật-03-2022-QH15.docx
+            Luật-04-2007-QH12.doc
+            Luật-04-2011-QH13.doc
+            Luật-04-2017-QH14.doc
+            Luật-04-2022-QH15.doc
+            Luật-05-2007-QH12.doc
+            Luật-05-2011-QH13.doc
+            Luật-05-2017-QH14.docx
+            Luật-05-2022-QH15.docx
+            Luật-06-2003-QH11.docx
+            Luật-06-2007-QH12.doc
+            Luật-06-2012-QH13.doc
+            Luật-06-2017-QH14.doc
+            Luật-06-2022-QH15.doc
+            Luật-07-2017-QH14.doc
+            Luật-07-2022-QH15.docx
+            Luật-08-2007-QH12.doc
+            Luật-08-2012-QH13.doc
+            Luật-08-2017-QH14.doc
+            Luật-08-2022-QH15.doc
+            Luật-09-2012-QH13.doc
+            Luật-09-2017-QH14.doc
+            Luật-09-2022-QH15.doc
+            Luật-10-2017-QH14.doc
+            Luật-10-2022-QH15.doc
+            Luật-102-2016-QH13.doc
+            Luật-103-2016-QH13.doc
+            Luật-104-2016-QH13.doc
+            Luật-105-2016-QH13.doc
+            Luật-106-2016-QH13.doc
+            Luật-107-2016-QH13.doc
+            Luật-108-2016-QH13.doc
+            Luật-11-2008-QH12.doc
+            Luật-11-2017-QH14.doc
+            Luật-12-2017-QH14.doc
+            Luật-12-2022-QH15.docx
+            Luật-13-2012-QH13.doc
+            Luật-13-2017-QH14.doc
+            Luật-13-2022-QH15.docx
+            Luật-14-2008-QH12.doc
+            Luật-14-2012-QH13.doc
+            Luật-14-2022-QH15.doc
+            Luật-15-2008-QH12.doc
+            Luật-15-2012-QH13.doc
+            Luật-15-2017-QH14.doc
+            Luật-15-2023-QH15.docx
+            Luật-16-1999-QH10.doc
+            Luật-16-2012-QH13.doc
+            Luật-16-2017-QH14.doc
+            Luật-16-2023-QH15.doc
+            Luật-17-2023-QH15.docx
+            Luật-18-2008-QH12.docx
+            Luật-18-2012-QH13.doc
+            Luật-18-2017-QH14.doc
+            Luật-18-2023-QH15.docx
+            Luật-19-2008-QH12.docx
+            Luật-19-2012-QH13.doc
+            Luật-19-2017-QH14.doc
+            Luật-19-2023-QH15.doc
+            Luật-20-2008-QH12.doc
+            Luật-20-2012-QH13.doc
+            Luật-20-2017-QH14.doc
+            Luật-20-2023-QH15.doc
+            Luật-21-2008-QH12.doc
+            Luật-21-2017-QH14.doc
+            Luật-21-2023-QH15.docx
+            Luật-21-LCT-HĐNN8.docx
+            Luật-22-2012-QH13.doc
+            Luật-22-2018-QH14.doc
+            Luật-22-2023-QH15.docx
+            Luật-23-2004-QH11.doc
+            Luật-23-2018-QH14.docx
+            Luật-23-2023-QH15.doc
+            Luật-23-L-CTN.doc
+            Luật-24-2008-QH12.doc
+            Luật-24-2018-QH14.docx
+            Luật-24-2023-QH15.docx
+            Luật-25-2008-QH12.doc
+            Luật-25-2018-QH14.doc
+            Luật-25-2023-QH15.docx
+            Luật-26-2008-QH12.doc
+            Luật-26-2012-QH13.doc
+            Luật-26-2018-QH14.doc
+            Luật-26-2023-QH15.docx
+            Luật-27-2008-QH12.doc
+            Luật-27-2018-QH14.doc
+            Luật-27-2023-QH15.docx
+            Luật-28-2009-QH12.doc
+            Luật-28-2013-QH13.doc
+            Luật-28-2023-QH15.docx
+            Luật-29-2013-QH13.doc
+            Luật-29-2018-QH14.doc
+            Luật-29-2023-QH15.docx
+            Luật-30-2013-QH13.doc
+            Luật-30-2018-QH14.doc
+            Luật-30-2023-QH15.docx
+            Luật-31-2018-QH14.doc
+            Luật-31-2024-QH15.docx
+            Luật-32-2004-QH11.docx
+            Luật-32-2013-QH13.doc
+            Luật-32-2018-QH14.doc
+            Luật-32-2024-QH15.docx
+            Luật-33-2009-QH12.docx
+            Luật-33-2013-QH13.doc
+            Luật-33-2018-QH14.doc
+            Luật-33-2024-QH15.docx
+            Luật-34-2018-QH14.doc
+            Luật-34-2024-QH15.docx
+            Luật-35-2013-QH13.doc
+            Luật-35-2018-QH14.doc
+            Luật-35-2024-QH15.docx
+            Luật-36-2005-QH11.doc
+            Luật-36-2009-QH12.doc
+            Luật-36-2018-QH14.doc
+            Luật-36-2024-QH15.docx
+            Luật-37-2018-QH14.doc
+            Luật-37-2024-QH15.docx
+            Luật-38-2013-QH13.doc
+            Luật-38-2019-QH14.docx
+            Luật-38-2024-QH15.docx
+            Luật-39-2009-QH12.doc
+            Luật-39-2024-QH15.docx
+            Luật-40-2019-QH14.doc
+            Luật-40-2024-QH15.docx
+            Luật-41-2013-QH13.doc
+            Luật-41-2019-QH14.docx
+            Luật-41-2024-QH15.docx
+            Luật-42-2009-QH12.doc
+            Luật-42-2013-QH13.doc
+            Luật-42-2019-QH14.doc
+            Luật-42-2024-QH15.docx
+            Luật-43-2019-QH14.doc
+            Luật-43-2024-QH15.docx
+            Luật-44-2013-QH13.doc
+            Luật-44-2019-QH14.docx
+            Luật-44-2024-QH15.docx
+            Luật-45-2009-QH12.doc
+            Luật-45-2024-QH15.docx
+            Luật-46-2010-QH12.doc
+            Luật-46-2014-QH13.docx
+            Luật-46-2019-QH14.docx
+            Luật-46-2024-QH15.docx
+            Luật-47-2014-QH13.doc
+            Luật-47-2024-QH15.docx
+            Luật-48-2010-QH12.doc
+            Luật-48-2014-QH13.doc
+            Luật-48-2019-QH14.docx
+            Luật-48-2024-QH15.docx
+            Luật-49-2005-QH11.DOC
+            Luật-49-2010-QH12.doc
+            Luật-49-2019-QH14.docx
+            Luật-49-2024-QH15.docx
+            Luật-50-2005-QH11.DOC
+            Luật-50-2010-QH12.doc
+            Luật-50-2014-QH13.docx
+            Luật-50-2024-QH15.docx
+            Luật-51-2010-QH12.doc
+            Luật-51-2014-QH13.doc
+            Luật-51-2019-QH14.docx
+            Luật-51-2024-QH15.docx
+            Luật-52-2010-QH12.doc
+            Luật-52-2014-QH13.doc
+            Luật-52-2019-QH14.docx
+            Luật-52-2024-QH15.docx
+            Luật-53-2019-QH14.doc
+            Luật-53-2024-QH15.docx
+            Luật-54-2010-QH12.doc
+            Luật-54-2014-QH13.doc
+            Luật-54-2019-QH14.docx
+            Luật-54-2024-QH15.docx
+            Luật-55-2010-QH12.doc
+            Luật-55-2019-QH14.docx
+            Luật-55-2024-QH15.docx
+            Luật-56-2014-QH13.doc
+            Luật-56-2020-QH14.docx
+            Luật-56-2024-QH15.docx
+            Luật-57-2010-QH12.doc
+            Luật-57-2014-QH13.doc
+            Luật-57-2020-QH14.docx
+            Luật-57-2024-QH15.docx
+            Luật-58-2010-QH12.doc
+            Luật-58-2020-QH14.docx
+            Luật-58-2024-QH15.docx
+            Luật-59-2020-QH14.docx
+            Luật-59-2024-QH15.docx
+            Luật-60-2014-QH13.doc
+            Luật-60-2020-QH14.docx
+            Luật-60-2024-QH15.docx
+            Luật-61-2014-QH13.doc
+            Luật-61-2020-QH14.docx
+            Luật-61-2024-QH15.docx
+            Luật-62-2020-QH14.docx
+            Luật-62-2025-QH15.docx
+            Luật-63-2014-QH13.docx
+            Luật-63-2025-QH15.docx
+            Luật-64-2006-QH11.DOC
+            Luật-64-2014-QH13.doc
+            Luật-64-2020-QH14.docx
+            Luật-64-2025-QH15.docx
+            Luật-65-2006-QH11.docx
+            Luật-65-2020-QH14.docx
+            Luật-66-2006-QH11.DOC
+            Luật-66-2020-QH14.docx
+            Luật-66-2025-QH15.docx
+            Luật-67-2006-QH11.DOC
+            Luật-67-2011-QH12.doc
+            Luật-67-2020-QH14.docx
+            Luật-67-2025-QH15.docx
+            Luật-68-2006-QH11.DOC
+            Luật-68-2020-QH14.docx
+            Luật-68-2025-QH15.docx
+            Luật-69-2020-QH14.docx
+            Luật-69-2025-QH15.docx
+            Luật-70-2014-QH13.doc
+            Luật-70-2020-QH14.docx
+            Luật-70-2025-QH15.docx
+            Luật-71-2014-QH13.docx
+            Luật-71-2020-QH14.docx
+            Luật-71-2025-QH15.docx
+            Luật-72-2014-QH13.doc
+            Luật-72-2020-QH14.docx
+            Luật-72-2025-QH15.docx
+            Luật-73-2006-QH11.DOC
+            Luật-73-2021-QH14.docx
+            Luật-73-2025-QH15.docx
+            Luật-74-2014-QH13.doc
+            Luật-74-2025-QH15.docx
+            Luật-75-2006-QH11.DOC
+            Luật-75-2015-QH13.doc
+            Luật-75-2025-QH15.docx
+            Luật-76-2025-QH15.docx
+            Luật-77-2006-QH11.DOC
+            Luật-77-2025-QH15.docx
+            Luật-78-2015-QH13.doc
+            Luật-78-2025-QH15.docx
+            Luật-79-2006-QH11.DOC
+            Luật-79-2015-QH13.doc
+            Luật-79-2025-QH15.docx
+            Luật-80-2025-QH15.docx
+            Luật-81-2015-QH13.doc
+            Luật-81-2025-QH15.docx
+            Luật-82-2015-QH13.doc
+            Luật-82-2025-QH15.docx
+            Luật-83-2015-QH13.doc
+            Luật-83-2025-QH15.docx
+            Luật-84-2015-QH13.doc
+            Luật-84-2025-QH15.docx
+            Luật-85-2015-QH13.doc
+            Luật-85-2025-QH15.docx
+            Luật-86-2015-QH13.doc
+            Luật-86-2025-QH15.docx
+            Luật-87-2025-QH15.docx
+            Luật-88-2015-QH13.doc
+            Luật-88-2025-QH15.docx
+            Luật-89-2015-QH13.doc
+            Luật-89-2025-QH15.docx
+            Luật-90-2015-QH13.doc
+            Luật-90-2025-QH15.docx
+            Luật-91-2025-QH15.docx
+            Luật-92-2025-QH15.docx
+            Luật-93-2015-QH13.doc
+            Luật-93-2025-QH15.docx
+            Luật-94-2015-QH13.docx
+            Luật-94-2025-QH15.docx
+            Luật-95-2025-QH15.docx
+            Luật-96-2015-QH13.docx
+            Luật-96-2025-QH15.docx
+            Luật-97-2015-QH13.doc
+            Luật-97-2025-QH15.docx
+            Luật-98-2015-QH13.doc
+            Luật-98-2025-QH15.docx
+            Luật-99-2015-QH13.doc
+            Luật-99-2025-QH15.docx
+        downloads_docx/
+            Bộ luật-100-2015-QH13.docx
+            Bộ luật-101-2015-QH13.docx
+            Bộ luật-45-2019-QH14.docx
+            Bộ luật-91-2015-QH13.docx
+            Bộ luật-92-2015-QH13.docx
+            Bộ luật-95-2015-QH13.docx
+            Luật-01-2016-QH14.docx
+            Luật-01-2021-QH15.docx
+            Luật-02-2011-QH13.docx
+            Luật-02-2016-QH14.docx
+            Luật-02-2021-QH15.docx
+            Luật-03-2007-QH12.docx
+            Luật-03-2022-QH15.docx
+            Luật-04-2007-QH12.docx
+            Luật-04-2011-QH13.docx
+            Luật-04-2017-QH14.docx
+            Luật-04-2022-QH15.docx
+            Luật-05-2007-QH12.docx
+            Luật-05-2011-QH13.docx
+            Luật-05-2017-QH14.docx
+            Luật-05-2022-QH15.docx
+            Luật-06-2003-QH11.docx
+            Luật-06-2007-QH12.docx
+            Luật-06-2012-QH13.docx
+            Luật-06-2017-QH14.docx
+            Luật-06-2022-QH15.docx
+            Luật-07-2017-QH14.docx
+            Luật-07-2022-QH15.docx
+            Luật-08-2007-QH12.docx
+            Luật-08-2012-QH13.docx
+            Luật-08-2017-QH14.docx
+            Luật-08-2022-QH15.docx
+            Luật-09-2012-QH13.docx
+            Luật-09-2017-QH14.docx
+            Luật-09-2022-QH15.docx
+            Luật-10-2017-QH14.docx
+            Luật-10-2022-QH15.docx
+            Luật-102-2016-QH13.docx
+            Luật-103-2016-QH13.docx
+            Luật-104-2016-QH13.docx
+            Luật-105-2016-QH13.docx
+            Luật-106-2016-QH13.docx
+            Luật-107-2016-QH13.docx
+            Luật-108-2016-QH13.docx
+            Luật-11-2008-QH12.docx
+            Luật-11-2017-QH14.docx
+            Luật-12-2017-QH14.docx
+            Luật-12-2022-QH15.docx
+            Luật-13-2012-QH13.docx
+            Luật-13-2017-QH14.docx
+            Luật-13-2022-QH15.docx
+            Luật-14-2008-QH12.docx
+            Luật-14-2012-QH13.docx
+            Luật-14-2022-QH15.docx
+            Luật-15-2008-QH12.docx
+            Luật-15-2012-QH13.docx
+            Luật-15-2017-QH14.docx
+            Luật-15-2023-QH15.docx
+            Luật-16-1999-QH10.docx
+            Luật-16-2012-QH13.docx
+            Luật-16-2017-QH14.docx
+            Luật-16-2023-QH15.docx
+            Luật-17-2023-QH15.docx
+            Luật-18-2008-QH12.docx
+            Luật-18-2012-QH13.docx
+            Luật-18-2017-QH14.docx
+            Luật-18-2023-QH15.docx
+            Luật-19-2008-QH12.docx
+            Luật-19-2012-QH13.docx
+            Luật-19-2017-QH14.docx
+            Luật-19-2023-QH15.docx
+            Luật-20-2008-QH12.docx
+            Luật-20-2012-QH13.docx
+            Luật-20-2017-QH14.docx
+            Luật-20-2023-QH15.docx
+            Luật-21-2008-QH12.docx
+            Luật-21-2017-QH14.docx
+            Luật-21-2023-QH15.docx
+            Luật-21-LCT-HĐNN8.docx
+            Luật-22-2012-QH13.docx
+            Luật-22-2018-QH14.docx
+            Luật-22-2023-QH15.docx
+            Luật-23-2004-QH11.docx
+            Luật-23-2018-QH14.docx
+            Luật-23-2023-QH15.docx
+            Luật-23-L-CTN.docx
+            Luật-24-2008-QH12.docx
+            Luật-24-2018-QH14.docx
+            Luật-24-2023-QH15.docx
+            Luật-25-2008-QH12.docx
+            Luật-25-2018-QH14.docx
+            Luật-25-2023-QH15.docx
+            Luật-26-2008-QH12.docx
+            Luật-26-2012-QH13.docx
+            Luật-26-2018-QH14.docx
+            Luật-26-2023-QH15.docx
+            Luật-27-2008-QH12.docx
+            Luật-27-2018-QH14.docx
+            Luật-27-2023-QH15.docx
+            Luật-28-2009-QH12.docx
+            Luật-28-2013-QH13.docx
+            Luật-28-2023-QH15.docx
+            Luật-29-2013-QH13.docx
+            Luật-29-2018-QH14.docx
+            Luật-29-2023-QH15.docx
+            Luật-30-2013-QH13.docx
+            Luật-30-2018-QH14.docx
+            Luật-30-2023-QH15.docx
+            Luật-31-2018-QH14.docx
+            Luật-31-2024-QH15.docx
+            Luật-32-2004-QH11.docx
+            Luật-32-2013-QH13.docx
+            Luật-32-2018-QH14.docx
+            Luật-32-2024-QH15.docx
+            Luật-33-2009-QH12.docx
+            Luật-33-2013-QH13.docx
+            Luật-33-2018-QH14.docx
+            Luật-33-2024-QH15.docx
+            Luật-34-2018-QH14.docx
+            Luật-34-2024-QH15.docx
+            Luật-35-2013-QH13.docx
+            Luật-35-2018-QH14.docx
+            Luật-35-2024-QH15.docx
+            Luật-36-2005-QH11.docx
+            Luật-36-2009-QH12.docx
+            Luật-36-2018-QH14.docx
+            Luật-36-2024-QH15.docx
+            Luật-37-2018-QH14.docx
+            Luật-37-2024-QH15.docx
+            Luật-38-2013-QH13.docx
+            Luật-38-2019-QH14.docx
+            Luật-38-2024-QH15.docx
+            Luật-39-2009-QH12.docx
+            Luật-39-2024-QH15.docx
+            Luật-40-2019-QH14.docx
+            Luật-40-2024-QH15.docx
+            Luật-41-2013-QH13.docx
+            Luật-41-2019-QH14.docx
+            Luật-41-2024-QH15.docx
+            Luật-42-2009-QH12.docx
+            Luật-42-2013-QH13.docx
+            Luật-42-2019-QH14.docx
+            Luật-42-2024-QH15.docx
+            Luật-43-2019-QH14.docx
+            Luật-43-2024-QH15.docx
+            Luật-44-2013-QH13.docx
+            Luật-44-2019-QH14.docx
+            Luật-44-2024-QH15.docx
+            Luật-45-2009-QH12.docx
+            Luật-45-2024-QH15.docx
+            Luật-46-2010-QH12.docx
+            Luật-46-2014-QH13.docx
+            Luật-46-2019-QH14.docx
+            Luật-46-2024-QH15.docx
+            Luật-47-2014-QH13.docx
+            Luật-47-2024-QH15.docx
+            Luật-48-2010-QH12.docx
+            Luật-48-2014-QH13.docx
+            Luật-48-2019-QH14.docx
+            Luật-48-2024-QH15.docx
+            Luật-49-2005-QH11.docx
+            Luật-49-2010-QH12.docx
+            Luật-49-2019-QH14.docx
+            Luật-49-2024-QH15.docx
+            Luật-50-2005-QH11.docx
+            Luật-50-2010-QH12.docx
+            Luật-50-2014-QH13.docx
+            Luật-50-2024-QH15.docx
+            Luật-51-2010-QH12.docx
+            Luật-51-2014-QH13.docx
+            Luật-51-2019-QH14.docx
+            Luật-51-2024-QH15.docx
+            Luật-52-2010-QH12.docx
+            Luật-52-2014-QH13.docx
+            Luật-52-2019-QH14.docx
+            Luật-52-2024-QH15.docx
+            Luật-53-2019-QH14.docx
+            Luật-53-2024-QH15.docx
+            Luật-54-2010-QH12.docx
+            Luật-54-2014-QH13.docx
+            Luật-54-2019-QH14.docx
+            Luật-54-2024-QH15.docx
+            Luật-55-2010-QH12.docx
+            Luật-55-2019-QH14.docx
+            Luật-55-2024-QH15.docx
+            Luật-56-2014-QH13.docx
+            Luật-56-2020-QH14.docx
+            Luật-56-2024-QH15.docx
+            Luật-57-2010-QH12.docx
+            Luật-57-2014-QH13.docx
+            Luật-57-2020-QH14.docx
+            Luật-57-2024-QH15.docx
+            Luật-58-2010-QH12.docx
+            Luật-58-2020-QH14.docx
+            Luật-58-2024-QH15.docx
+            Luật-59-2020-QH14.docx
+            Luật-59-2024-QH15.docx
+            Luật-60-2014-QH13.docx
+            Luật-60-2020-QH14.docx
+            Luật-60-2024-QH15.docx
+            Luật-61-2014-QH13.docx
+            Luật-61-2020-QH14.docx
+            Luật-61-2024-QH15.docx
+            Luật-62-2020-QH14.docx
+            Luật-62-2025-QH15.docx
+            Luật-63-2014-QH13.docx
+            Luật-63-2025-QH15.docx
+            Luật-64-2006-QH11.docx
+            Luật-64-2014-QH13.docx
+            Luật-64-2020-QH14.docx
+            Luật-64-2025-QH15.docx
+            Luật-65-2006-QH11.docx
+            Luật-65-2020-QH14.docx
+            Luật-66-2006-QH11.docx
+            Luật-66-2020-QH14.docx
+            Luật-66-2025-QH15.docx
+            Luật-67-2006-QH11.docx
+            Luật-67-2011-QH12.docx
+            Luật-67-2020-QH14.docx
+            Luật-67-2025-QH15.docx
+            Luật-68-2006-QH11.docx
+            Luật-68-2020-QH14.docx
+            Luật-68-2025-QH15.docx
+            Luật-69-2020-QH14.docx
+            Luật-69-2025-QH15.docx
+            Luật-70-2014-QH13.docx
+            Luật-70-2020-QH14.docx
+            Luật-70-2025-QH15.docx
+            Luật-71-2014-QH13.docx
+            Luật-71-2020-QH14.docx
+            Luật-71-2025-QH15.docx
+            Luật-72-2014-QH13.docx
+            Luật-72-2020-QH14.docx
+            Luật-72-2025-QH15.docx
+            Luật-73-2006-QH11.docx
+            Luật-73-2021-QH14.docx
+            Luật-73-2025-QH15.docx
+            Luật-74-2014-QH13.docx
+            Luật-74-2025-QH15.docx
+            Luật-75-2006-QH11.docx
+            Luật-75-2015-QH13.docx
+            Luật-75-2025-QH15.docx
+            Luật-76-2025-QH15.docx
+            Luật-77-2006-QH11.docx
+            Luật-77-2025-QH15.docx
+            Luật-78-2015-QH13.docx
+            Luật-78-2025-QH15.docx
+            Luật-79-2006-QH11.docx
+            Luật-79-2015-QH13.docx
+            Luật-79-2025-QH15.docx
+            Luật-80-2025-QH15.docx
+            Luật-81-2015-QH13.docx
+            Luật-81-2025-QH15.docx
+            Luật-82-2015-QH13.docx
+            Luật-82-2025-QH15.docx
+            Luật-83-2015-QH13.docx
+            Luật-83-2025-QH15.docx
+            Luật-84-2015-QH13.docx
+            Luật-84-2025-QH15.docx
+            Luật-85-2015-QH13.docx
+            Luật-85-2025-QH15.docx
+            Luật-86-2015-QH13.docx
+            Luật-86-2025-QH15.docx
+            Luật-87-2025-QH15.docx
+            Luật-88-2015-QH13.docx
+            Luật-88-2025-QH15.docx
+            Luật-89-2015-QH13.docx
+            Luật-89-2025-QH15.docx
+            Luật-90-2015-QH13.docx
+            Luật-90-2025-QH15.docx
+            Luật-91-2025-QH15.docx
+            Luật-92-2025-QH15.docx
+            Luật-93-2015-QH13.docx
+            Luật-93-2025-QH15.docx
+            Luật-94-2015-QH13.docx
+            Luật-94-2025-QH15.docx
+            Luật-95-2025-QH15.docx
+            Luật-96-2015-QH13.docx
+            Luật-96-2025-QH15.docx
+            Luật-97-2015-QH13.docx
+            Luật-97-2025-QH15.docx
+            Luật-98-2015-QH13.docx
+            Luật-98-2025-QH15.docx
+            Luật-99-2015-QH13.docx
+            Luật-99-2025-QH15.docx
+        report/
+            check_result.csv
+        result/
+            finetuning_data.jsonl
+            rag_knowledge_base.csv
+    models/
+    step1/
+        check_enough_data.py
+        convert_doc_to_docx.py
+        crawl_data.py
+        create_vector_store.py
+        preprocess_law_data.py
+        process_qa_finetuning_data.py
+    step2/
+        chatbot_rag_only.py
+    utils/
+    vector_store/
+        faiss_index_v2/
+            index.faiss
+            index.pkl
