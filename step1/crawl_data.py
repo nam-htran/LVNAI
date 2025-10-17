@@ -6,12 +6,10 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# --- CONFIG ---
 DOCX_FILE = r"dataset\Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx"
-DOWNLOAD_DIR = os.path.abspath("dataset/downloads")  # tải trực tiếp vào thư mục dataset
+DOWNLOAD_DIR = os.path.abspath("dataset/downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ---------- extract hyperlinks ----------
 def get_hyperlinks_from_docx(docx_path):
     links = []
     with zipfile.ZipFile(docx_path, 'r') as z:
@@ -38,11 +36,10 @@ def get_hyperlinks_from_docx(docx_path):
         texts = [t.text for t in hyp.findall('.//w:t', ns) if t.text]
         display = ''.join(texts)
         url = rels.get(rid)
-        if url and "luatvietnam.vn" in url:  # chỉ lấy link luatvietnam
+        if url and "luatvietnam.vn" in url: 
             links.append((display, url))
     return links
 
-# ---------- start Selenium Chrome mới với download folder riêng ----------
 def start_driver(download_dir):
     chrome_options = Options()
     prefs = {
@@ -55,7 +52,6 @@ def start_driver(download_dir):
     driver = webdriver.Chrome(options=chrome_options)
     return driver
 
-# ---------- click các link DOC/DOCX trên trang ----------
 def try_click_vietnamese_links(driver):
     anchors = driver.find_elements(By.CSS_SELECTOR, "div.download-vb a[href]")
     clicked_any = False
@@ -72,7 +68,6 @@ def try_click_vietnamese_links(driver):
                 pass
     return clicked_any
 
-# ---------- chờ download hoàn tất ----------
 def wait_for_active_downloads(download_folder, timeout=120):
     t0 = time.time()
     while True:
@@ -85,7 +80,6 @@ def wait_for_active_downloads(download_folder, timeout=120):
             return
         time.sleep(1)
 
-# ---------- main visit + download ----------
 def visit_and_download_links(driver, links):
     for idx, (display, url) in enumerate(links, 1):
         print(f"[{idx}/{len(links)}] Visiting: {display} -> {url}")
@@ -99,7 +93,6 @@ def visit_and_download_links(driver, links):
         except Exception as e:
             print("Error xử lý link:", e)
 
-# ---------- main ----------
 def main():
     links = get_hyperlinks_from_docx(DOCX_FILE)
     print(f"Tìm thấy {len(links)} hyperlink.")

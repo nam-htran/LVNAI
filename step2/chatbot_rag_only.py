@@ -1,15 +1,12 @@
-# file: chatbot_rag_only.py (Phiên bản cuối cùng, sử dụng ContextualCompressionRetriever)
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from pathlib import Path
-# --- THAY ĐỔI 1: IMPORT ĐÚNG COMPONENT ---
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors import FlashrankRerank
 
-# --- CẤU HÌNH ---
 class Config:
     DEBUG = True
     VECTOR_STORE_PATH = "vector_store/faiss_index_v2" 
@@ -19,13 +16,11 @@ class Config:
     CANDIDATES_TO_RETRIEVE = 20
     TOP_N_AFTER_RERANK = 5
 
-# --- KIỂM TRA LỖI ---
 if not Path(Config.VECTOR_STORE_PATH).exists():
     print(f"LỖI: Không tìm thấy thư mục Vector Store tại '{Config.VECTOR_STORE_PATH}'.")
     print("Vui lòng chạy các script `preprocess_law_data.py` và `create_vector_store.py` trước.")
     exit()
 
-# --- KHỞI TẠO CÁC THÀNH PHẦN ---
 load_dotenv()
 
 api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -47,8 +42,6 @@ print(f"Đang tải mô hình Reranker: {Config.RERANKER_MODEL}...")
 compressor = FlashrankRerank(top_n=Config.TOP_N_AFTER_RERANK, model=Config.RERANKER_MODEL)
 print("Tải Reranker thành công!")
 
-# --- THAY ĐỔI 2: TẠO MỘT COMPRESSION RETRIEVER DUY NHẤT ---
-# Đây là cách làm chính xác: bọc retriever và compressor lại với nhau.
 final_retriever = ContextualCompressionRetriever(
     base_compressor=compressor, base_retriever=base_retriever
 )
@@ -74,7 +67,6 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
 """
 
 def get_rag_response(query: str) -> str:
-    # --- THAY ĐỔI 3: GỌI RETRIEVER DUY NHẤT ĐÃ ĐƯỢC TỐI ƯU HÓA ---
     print("Đang truy xuất và xếp hạng lại văn bản...")
     reranked_docs = final_retriever.invoke(query)
 

@@ -1,11 +1,9 @@
-# file: create_vector_store_v2.py
 import pandas as pd
 from langchain_community.document_loaders import DataFrameLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from tqdm import tqdm
 
-# --- CONFIG ---
 PROCESSED_DATA_PATH = "dataset/result/rag_knowledge_base.csv"
 VECTOR_STORE_PATH = "vector_store/faiss_index_v2"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

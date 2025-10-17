@@ -1,13 +1,11 @@
-# file: preprocess_law_data.py (Phiên bản nâng cấp - chia theo Khoản)
 import os
 import re
 import pandas as pd
 from docx import Document
 from tqdm import tqdm
 
-# --- CONFIG ---
 DATA_DIR = "dataset/downloads_docx"
-OUTPUT_CSV = "dataset/result/rag_knowledge_base.csv" # Lưu vào file mới để so sánh
+OUTPUT_CSV = "dataset/result/rag_knowledge_base.csv"
 
 def read_docx_text(file_path):
     try:
@@ -33,13 +31,11 @@ def chunk_text(text, law_number_clean):
     current_article_number = ""
     current_article_content = ""
 
-    # Pattern để tìm Điều, Chương, Mục
     structure_pattern = re.compile(
         r"^(Chương [IVXLCDM\d]+.*?)\n|^(Mục \d+.*?)\n|^(Điều \d+[a-z]?\..*?)$",
         re.MULTILINE | re.IGNORECASE
     )
     
-    # Tìm tất cả các cấu trúc (Chương, Mục, Điều)
     matches = list(structure_pattern.finditer(text))
     if not matches:
         return []
@@ -59,33 +55,26 @@ def chunk_text(text, law_number_clean):
         elif section_match:
             current_section = section_match.strip()
         elif article_match:
-            # Khi gặp một Điều mới, xử lý Điều cũ
             if current_article_number and current_article_content:
                 process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
             
-            # Cập nhật thông tin cho Điều mới
             current_article_number = article_match.strip()
             current_article_content = content_block
     
-    # Xử lý Điều cuối cùng trong file
     if current_article_number and current_article_content:
         process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
         
     return chunks
 
 def process_article(chunks, law_number, chapter, section, article_number_raw, article_content):
-    # Chuẩn hóa tên Điều để tạo ID
     article_match_obj = re.match(r"^(Điều \d+[a-z]?)\.?", article_number_raw, re.IGNORECASE)
     if not article_match_obj: return
     article_number_normalized = article_match_obj.group(1).replace(" ", "-")
     
-    # Pattern để chia nhỏ theo Khoản (vd: "1.", "2.", "a)")
     clause_pattern = re.compile(r"^\s*(\d+\.|[a-z]\))\s", re.MULTILINE)
     clauses = clause_pattern.split(article_content)
     
-    # Nếu có các Khoản (độ dài của list > 1)
     if len(clauses) > 2:
-        # Phần đầu tiên là tên Điều, bỏ qua
         content_remainder = clauses[0]
         i = 1
         while i < len(clauses):
@@ -93,7 +82,6 @@ def process_article(chunks, law_number, chapter, section, article_number_raw, ar
             clause_content = clauses[i+1]
             full_clause_content = f"{clause_number}{clause_content}".strip()
             
-            # Tạo ID duy nhất cho Khoản
             unique_id = f"{law_number}/{article_number_normalized}/khoan-{clause_number.replace('.', '').replace(')', '')}"
             
             chunks.append({
@@ -102,11 +90,10 @@ def process_article(chunks, law_number, chapter, section, article_number_raw, ar
                 "chapter": chapter,
                 "section": section,
                 "article_number": article_number_raw,
-                "content": f"{article_number_raw}\n{full_clause_content}" # Giữ lại tên Điều cho ngữ cảnh
+                "content": f"{article_number_raw}\n{full_clause_content}"
             })
             i += 2
     else:
-        # Nếu Điều không có Khoản, giữ nguyên cả Điều
         unique_id = f"{law_number}/{article_number_normalized}"
         chunks.append({
             "article_id": unique_id,

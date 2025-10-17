@@ -1,4 +1,154 @@
 
+===== .\app.py =====
+import streamlit as st
+import torch
+import time
+import os
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from sentence_transformers import CrossEncoder
+from litellm import completion
+import re
+
+class AppConfig:
+    FINETUNED_MODEL_PATH = "models/Qwen_Qwen2-0.5B-Instruct-sft-finetuned-full/final_model"
+    VECTOR_STORE_PATH = "vector_store/faiss_index_v2"
+    EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+    CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    OPENROUTER_MODEL = "tngtech/deepseek-r1t2-chimera:free"
+
+@st.cache_resource
+def load_retriever():
+    embeddings = HuggingFaceEmbeddings(model_name=AppConfig.EMBEDDING_MODEL)
+    vector_store = FAISS.load_local(
+        AppConfig.VECTOR_STORE_PATH,
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
+    return vector_store.as_retriever(search_kwargs={'k': 10})
+
+@st.cache_resource
+def load_reranker():
+    return CrossEncoder(AppConfig.CROSS_ENCODER_MODEL)
+
+@st.cache_resource
+def load_finetuned_pipeline():
+    if not os.path.isdir(AppConfig.FINETUNED_MODEL_PATH):
+        return None
+    model = AutoModelForCausalLM.from_pretrained(
+        AppConfig.FINETUNED_MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="auto"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(AppConfig.FINETUNED_MODEL_PATH)
+    return pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+def auto_format_response(text: str) -> str:
+    text = re.sub(r'(?<!\n)(###\s)', r'\n\n\1', text)
+    text = re.sub(r'(?<!\n)(\d+\.\s)', r'\n\1', text)
+    text = re.sub(r'(?<!\n)(-\s)', r'\n\1', text)
+    return text.strip()
+
+def format_rag_prompt(context, question, model_type='qwen'):
+    system_prompt_content = (
+        "Bạn là một trợ lý pháp lý chuyên nghiệp. "
+        "Hãy trả lời câu hỏi của người dùng dựa trên các điều luật được cung cấp dưới đây. "
+        "Nếu thông tin không có trong luật, hãy nói rằng bạn không tìm thấy thông tin.\n\n"
+        "**QUAN TRỌNG**: Hãy định dạng câu trả lời bằng Markdown để dễ đọc. "
+        "Sử dụng tiêu đề (`###`), gạch đầu dòng (`-`), và **in đậm** khi cần thiết. "
+        "Luôn xuống dòng rõ ràng giữa các mục."
+    )
+    
+    if model_type == 'qwen':
+        return (
+            f"<|im_start|>system\n{system_prompt_content}<|im_end|>\n"
+            f"<|im_start|>user\n[Bối cảnh từ các điều luật]\n{context}\n\n[Câu hỏi]\n{question}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+    else:
+        return f"{system_prompt_content}\n\n[Bối cảnh từ các điều luật]\n{context}\n\n[Câu hỏi]\n{question}"
+
+def get_rag_context(prompt, retriever, reranker):
+    retrieved_docs = retriever.invoke(prompt)
+    rerank_input = [[prompt, doc.page_content] for doc in retrieved_docs]
+    scores = reranker.predict(rerank_input)
+    doc_scores = list(zip(retrieved_docs, scores))
+    doc_scores.sort(key=lambda x: x[1], reverse=True)
+    reranked_docs = [doc for doc, score in doc_scores[:3]]
+    return "\n\n".join([doc.page_content for doc in reranked_docs])
+
+st.set_page_config(page_title="⚖️ Trợ lý Pháp lý", layout="wide")
+
+with st.spinner("Đang tải các mô hình nền, vui lòng chờ..."):
+    finetuned_pipeline = load_finetuned_pipeline()
+    retriever = load_retriever()
+    reranker = load_reranker()
+
+st.title("⚖️ Trợ lý Pháp lý Việt Nam")
+st.sidebar.title("Chế độ")
+
+mode_options = ["RAG Only (OpenRouter)", "RAG + LLM Fine-tuned"]
+if finetuned_pipeline is None:
+    st.sidebar.warning(f"Không tìm thấy mô hình fine-tuned tại:\n{AppConfig.FINETUNED_MODEL_PATH}\nChế độ 'RAG + LLM Fine-tuned' đã bị vô hiệu hóa.")
+    mode_options = ["RAG Only (OpenRouter)"]
+
+mode = st.sidebar.radio("Chọn chế độ bạn muốn sử dụng:", mode_options)
+
+if 'history' not in st.session_state:
+    st.session_state.history = {}
+if mode not in st.session_state.history:
+    st.session_state.history[mode] = []
+    st.session_state.history[mode].append({"role": "assistant", "content": "Tôi có thể giúp gì cho bạn về luật Việt Nam?"})
+
+for message in st.session_state.history[mode]:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if user_prompt := st.chat_input("Nhập câu hỏi của bạn..."):
+    st.session_state.history[mode].append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        with st.spinner("AI đang tìm kiếm và suy nghĩ..."):
+            context = get_rag_context(user_prompt, retriever, reranker)
+            
+            if mode == "RAG Only (OpenRouter)":
+                prompt_for_api = format_rag_prompt(context, user_prompt, model_type='deepseek')
+                messages = [{"role": "user", "content": prompt_for_api}]
+                try:
+                    response = completion(
+                        model=f"openrouter/{AppConfig.OPENROUTER_MODEL}",
+                        messages=messages,
+                        api_key=st.secrets["OPENROUTER_API_KEY"],
+                        base_url="https://openrouter.ai/api/v1"
+                    )
+                    assistant_response = response.choices[0].message.content
+                except Exception as e:
+                    assistant_response = f"Lỗi khi gọi OpenRouter API: {e}"
+
+            else:
+                formatted_prompt = format_rag_prompt(context, user_prompt, model_type='qwen')
+                response_data = finetuned_pipeline(
+                    formatted_prompt,
+                    max_new_tokens=1024,
+                    pad_token_id=finetuned_pipeline.tokenizer.eos_token_id
+                )
+                assistant_response = response_data[0]['generated_text'].split("<|im_start|>assistant\n")[1].strip()
+        
+        formatted_response = auto_format_response(assistant_response)
+        
+        full_response = ""
+        for chunk in formatted_response.split():
+            full_response += chunk + " "
+            time.sleep(0.05)
+            message_placeholder.markdown(full_response.replace("\n", "\n\n") + "▌")
+        message_placeholder.markdown(full_response)
+        
+    st.session_state.history[mode].append({"role": "assistant", "content": full_response})
+
 ===== .\step1\check_enough_data.py =====
 from docx import Document
 import pandas as pd
@@ -64,56 +214,43 @@ print(f"\nĐã lưu báo cáo tại: {output_path}")
 
 
 ===== .\step1\convert_doc_to_docx.py =====
-# file: convert_doc_to_docx.py
 import os
 import win32com.client as win32
 from tqdm import tqdm
 
-# --- CONFIG ---
-# Thư mục chứa các file .doc và .docx gốc
 SOURCE_DIR = os.path.abspath("dataset/downloads")
-# Thư mục mới để chứa tất cả các file sau khi đã được chuẩn hóa sang .docx
 TARGET_DIR = os.path.abspath("dataset/downloads_docx")
 
 def main():
-    """
-    Tự động chuyển đổi tất cả file .doc sang .docx bằng Microsoft Word.
-    Các file .docx sẵn có sẽ được sao chép qua.
-    """
     if not os.path.exists(TARGET_DIR):
         os.makedirs(TARGET_DIR)
         print(f"Đã tạo thư mục mới: {TARGET_DIR}")
 
     word = None
     try:
-        # Khởi động ứng dụng Word chạy ngầm
         word = win32.Dispatch("Word.Application")
         word.Visible = False
 
         all_files = os.listdir(SOURCE_DIR)
         
-        # Lọc ra các file văn bản cần xử lý
         doc_files = [f for f in all_files if f.lower().endswith(".doc") and not f.startswith('~')]
         
         print(f"\nBắt đầu chuyển đổi {len(doc_files)} file .doc sang .docx...")
         for filename in tqdm(doc_files, desc="Converting .doc files"):
             source_path = os.path.join(SOURCE_DIR, filename)
-            # Tạo tên file mới với đuôi .docx
             target_filename = os.path.splitext(filename)[0] + ".docx"
             target_path = os.path.join(TARGET_DIR, target_filename)
 
             if os.path.exists(target_path):
-                continue # Bỏ qua nếu file đã được chuyển đổi
+                continue
 
             try:
                 doc = word.Documents.Open(source_path)
-                # FileFormat=16 tương ứng với định dạng .docx
                 doc.SaveAs(target_path, FileFormat=16)
                 doc.Close()
             except Exception as e:
                 print(f"\nLỗi khi chuyển đổi file {filename}: {e}")
         
-        # Sao chép các file .docx đã có sẵn
         docx_files = [f for f in all_files if f.lower().endswith(".docx") and not f.startswith('~')]
         print(f"\nBắt đầu sao chép {len(docx_files)} file .docx có sẵn...")
         from shutil import copy2
@@ -124,7 +261,6 @@ def main():
                  copy2(source_path, target_path)
 
     finally:
-        # Đảm bảo ứng dụng Word luôn được đóng, kể cả khi có lỗi
         if word:
             word.Quit()
 
@@ -143,12 +279,10 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# --- CONFIG ---
 DOCX_FILE = r"dataset\Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx"
-DOWNLOAD_DIR = os.path.abspath("dataset/downloads")  # tải trực tiếp vào thư mục dataset
+DOWNLOAD_DIR = os.path.abspath("dataset/downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ---------- extract hyperlinks ----------
 def get_hyperlinks_from_docx(docx_path):
     links = []
     with zipfile.ZipFile(docx_path, 'r') as z:
@@ -175,11 +309,10 @@ def get_hyperlinks_from_docx(docx_path):
         texts = [t.text for t in hyp.findall('.//w:t', ns) if t.text]
         display = ''.join(texts)
         url = rels.get(rid)
-        if url and "luatvietnam.vn" in url:  # chỉ lấy link luatvietnam
+        if url and "luatvietnam.vn" in url: 
             links.append((display, url))
     return links
 
-# ---------- start Selenium Chrome mới với download folder riêng ----------
 def start_driver(download_dir):
     chrome_options = Options()
     prefs = {
@@ -192,7 +325,6 @@ def start_driver(download_dir):
     driver = webdriver.Chrome(options=chrome_options)
     return driver
 
-# ---------- click các link DOC/DOCX trên trang ----------
 def try_click_vietnamese_links(driver):
     anchors = driver.find_elements(By.CSS_SELECTOR, "div.download-vb a[href]")
     clicked_any = False
@@ -209,7 +341,6 @@ def try_click_vietnamese_links(driver):
                 pass
     return clicked_any
 
-# ---------- chờ download hoàn tất ----------
 def wait_for_active_downloads(download_folder, timeout=120):
     t0 = time.time()
     while True:
@@ -222,7 +353,6 @@ def wait_for_active_downloads(download_folder, timeout=120):
             return
         time.sleep(1)
 
-# ---------- main visit + download ----------
 def visit_and_download_links(driver, links):
     for idx, (display, url) in enumerate(links, 1):
         print(f"[{idx}/{len(links)}] Visiting: {display} -> {url}")
@@ -236,7 +366,6 @@ def visit_and_download_links(driver, links):
         except Exception as e:
             print("Error xử lý link:", e)
 
-# ---------- main ----------
 def main():
     links = get_hyperlinks_from_docx(DOCX_FILE)
     print(f"Tìm thấy {len(links)} hyperlink.")
@@ -257,14 +386,12 @@ if __name__ == "__main__":
 
 
 ===== .\step1\create_vector_store.py =====
-# file: create_vector_store_v2.py
 import pandas as pd
 from langchain_community.document_loaders import DataFrameLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from tqdm import tqdm
 
-# --- CONFIG ---
 PROCESSED_DATA_PATH = "dataset/result/rag_knowledge_base.csv"
 VECTOR_STORE_PATH = "vector_store/faiss_index_v2"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -295,16 +422,14 @@ if __name__ == "__main__":
     main()
 
 ===== .\step1\preprocess_law_data.py =====
-# file: preprocess_law_data.py (Phiên bản nâng cấp - chia theo Khoản)
 import os
 import re
 import pandas as pd
 from docx import Document
 from tqdm import tqdm
 
-# --- CONFIG ---
 DATA_DIR = "dataset/downloads_docx"
-OUTPUT_CSV = "dataset/result/rag_knowledge_base.csv" # Lưu vào file mới để so sánh
+OUTPUT_CSV = "dataset/result/rag_knowledge_base.csv"
 
 def read_docx_text(file_path):
     try:
@@ -330,13 +455,11 @@ def chunk_text(text, law_number_clean):
     current_article_number = ""
     current_article_content = ""
 
-    # Pattern để tìm Điều, Chương, Mục
     structure_pattern = re.compile(
         r"^(Chương [IVXLCDM\d]+.*?)\n|^(Mục \d+.*?)\n|^(Điều \d+[a-z]?\..*?)$",
         re.MULTILINE | re.IGNORECASE
     )
     
-    # Tìm tất cả các cấu trúc (Chương, Mục, Điều)
     matches = list(structure_pattern.finditer(text))
     if not matches:
         return []
@@ -356,33 +479,26 @@ def chunk_text(text, law_number_clean):
         elif section_match:
             current_section = section_match.strip()
         elif article_match:
-            # Khi gặp một Điều mới, xử lý Điều cũ
             if current_article_number and current_article_content:
                 process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
             
-            # Cập nhật thông tin cho Điều mới
             current_article_number = article_match.strip()
             current_article_content = content_block
     
-    # Xử lý Điều cuối cùng trong file
     if current_article_number and current_article_content:
         process_article(chunks, law_number_clean, current_chapter, current_section, current_article_number, current_article_content)
         
     return chunks
 
 def process_article(chunks, law_number, chapter, section, article_number_raw, article_content):
-    # Chuẩn hóa tên Điều để tạo ID
     article_match_obj = re.match(r"^(Điều \d+[a-z]?)\.?", article_number_raw, re.IGNORECASE)
     if not article_match_obj: return
     article_number_normalized = article_match_obj.group(1).replace(" ", "-")
     
-    # Pattern để chia nhỏ theo Khoản (vd: "1.", "2.", "a)")
     clause_pattern = re.compile(r"^\s*(\d+\.|[a-z]\))\s", re.MULTILINE)
     clauses = clause_pattern.split(article_content)
     
-    # Nếu có các Khoản (độ dài của list > 1)
     if len(clauses) > 2:
-        # Phần đầu tiên là tên Điều, bỏ qua
         content_remainder = clauses[0]
         i = 1
         while i < len(clauses):
@@ -390,7 +506,6 @@ def process_article(chunks, law_number, chapter, section, article_number_raw, ar
             clause_content = clauses[i+1]
             full_clause_content = f"{clause_number}{clause_content}".strip()
             
-            # Tạo ID duy nhất cho Khoản
             unique_id = f"{law_number}/{article_number_normalized}/khoan-{clause_number.replace('.', '').replace(')', '')}"
             
             chunks.append({
@@ -399,11 +514,10 @@ def process_article(chunks, law_number, chapter, section, article_number_raw, ar
                 "chapter": chapter,
                 "section": section,
                 "article_number": article_number_raw,
-                "content": f"{article_number_raw}\n{full_clause_content}" # Giữ lại tên Điều cho ngữ cảnh
+                "content": f"{article_number_raw}\n{full_clause_content}"
             })
             i += 2
     else:
-        # Nếu Điều không có Khoản, giữ nguyên cả Điều
         unique_id = f"{law_number}/{article_number_normalized}"
         chunks.append({
             "article_id": unique_id,
@@ -441,20 +555,14 @@ if __name__ == "__main__":
     main()
 
 ===== .\step1\process_qa_finetuning_data.py =====
-# file: step1/process_qa_finetuning_data.py (PHIÊN BẢN CUỐI CÙNG)
 import json
 from datasets import load_dataset
 from tqdm import tqdm
 
-# --- CẤU HÌNH ---
 DATASET_NAME = "thangvip/vietnamese-legal-qa"
 OUTPUT_JSONL_PATH = "dataset/result/finetuning_data.jsonl"
 
 def main():
-    """
-    Tải bộ dữ liệu Hỏi-Đáp từ Hugging Face, "bóc tách" các cặp hỏi-đáp từ cột
-    'generated_qa_pairs' và chuyển đổi nó thành định dạng JSONL chuẩn cho SFTTrainer.
-    """
     print(f"--- Bắt đầu xử lý dữ liệu fine-tuning từ '{DATASET_NAME}' ---")
 
     try:
@@ -468,30 +576,22 @@ def main():
     skipped_pairs = 0
     total_pairs = 0
 
-    # Lặp qua từng điều luật trong bộ dữ liệu
     for row in tqdm(dataset, desc="Đang trích xuất các cặp Hỏi-Đáp"):
-        # Lấy ra danh sách các cặp QA từ cột 'generated_qa_pairs'
         qa_pairs_list = row.get('generated_qa_pairs')
 
-        # Kiểm tra xem có phải là một danh sách hợp lệ và không rỗng không
         if not isinstance(qa_pairs_list, list) or not qa_pairs_list:
             continue
 
-        # Lặp qua từng cặp QA trong danh sách
         for qa_pair in qa_pairs_list:
             total_pairs += 1
-            # qa_pair là một dictionary, ví dụ: {'answer': '...', 'question': '...'}
             question = qa_pair.get('question')
             answer = qa_pair.get('answer')
 
-            # Bỏ qua các cặp có dữ liệu rỗng hoặc không đúng định dạng
             if not question or not isinstance(question, str) or not question.strip() or \
                not answer or not isinstance(answer, str) or not answer.strip():
                 skipped_pairs += 1
                 continue
             
-            # Thêm cặp QA hợp lệ vào danh sách dữ liệu fine-tuning
-            # Context vẫn để trống vì chúng ta muốn dạy mô hình cách trả lời trực tiếp
             finetuning_data.append({
                 "instruction": question,
                 "context": "", 
@@ -517,18 +617,15 @@ if __name__ == "__main__":
     main()
 
 ===== .\step2\chatbot_rag_only.py =====
-# file: chatbot_rag_only.py (Phiên bản cuối cùng, sử dụng ContextualCompressionRetriever)
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from pathlib import Path
-# --- THAY ĐỔI 1: IMPORT ĐÚNG COMPONENT ---
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors import FlashrankRerank
 
-# --- CẤU HÌNH ---
 class Config:
     DEBUG = True
     VECTOR_STORE_PATH = "vector_store/faiss_index_v2" 
@@ -538,13 +635,11 @@ class Config:
     CANDIDATES_TO_RETRIEVE = 20
     TOP_N_AFTER_RERANK = 5
 
-# --- KIỂM TRA LỖI ---
 if not Path(Config.VECTOR_STORE_PATH).exists():
     print(f"LỖI: Không tìm thấy thư mục Vector Store tại '{Config.VECTOR_STORE_PATH}'.")
     print("Vui lòng chạy các script `preprocess_law_data.py` và `create_vector_store.py` trước.")
     exit()
 
-# --- KHỞI TẠO CÁC THÀNH PHẦN ---
 load_dotenv()
 
 api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -566,8 +661,6 @@ print(f"Đang tải mô hình Reranker: {Config.RERANKER_MODEL}...")
 compressor = FlashrankRerank(top_n=Config.TOP_N_AFTER_RERANK, model=Config.RERANKER_MODEL)
 print("Tải Reranker thành công!")
 
-# --- THAY ĐỔI 2: TẠO MỘT COMPRESSION RETRIEVER DUY NHẤT ---
-# Đây là cách làm chính xác: bọc retriever và compressor lại với nhau.
 final_retriever = ContextualCompressionRetriever(
     base_compressor=compressor, base_retriever=base_retriever
 )
@@ -593,7 +686,6 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
 """
 
 def get_rag_response(query: str) -> str:
-    # --- THAY ĐỔI 3: GỌI RETRIEVER DUY NHẤT ĐÃ ĐƯỢC TỐI ƯU HÓA ---
     print("Đang truy xuất và xếp hạng lại văn bản...")
     reranked_docs = final_retriever.invoke(query)
 
@@ -645,8 +737,108 @@ def main():
 if __name__ == "__main__":
     main()
 
+===== .\step2\finetune_llm.py =====
+import torch
+from datasets import load_dataset, DatasetDict
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from trl import SFTTrainer, SFTConfig
+from peft import LoraConfig
+import os
+
+class Config:
+    MODEL_NAME = "Qwen/Qwen2-0.5B-Instruct"
+    DATASET_PATH = "dataset/result/finetuning_data.jsonl"
+    OUTPUT_DIR = f"models/{MODEL_NAME.replace('/', '_')}-sft-finetuned-full"
+    MAX_LENGTH = 1024
+
+def formatting_prompts_func(example):
+    text = (
+        f"<|im_start|>system\nBạn là một trợ lý pháp lý chuyên nghiệp.<|im_end|>\n"
+        f"<|im_start|>user\n{example['instruction']}<|im_end|>\n"
+        f"<|im_start|>assistant\n{example['response']}<|im_end|>"
+    )
+    return text
+
+def main():
+    print("--- Starting FULL TRAINING: SFT with Trainer-led device placement ---")
+    
+    full_dataset = load_dataset("json", data_files=Config.DATASET_PATH, split="train")
+    
+    train_test_split = full_dataset.train_test_split(test_size=0.05)
+    dataset = DatasetDict({
+        'train': train_test_split['train'],
+        'test': train_test_split['test']
+    })
+    print(f"Dataset loaded and split: {len(dataset['train'])} training samples, {len(dataset['test'])} validation samples.")
+
+
+    print(f"Loading base model: {Config.MODEL_NAME}")
+    tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        
+    model = AutoModelForCausalLM.from_pretrained(
+        Config.MODEL_NAME,
+        torch_dtype=torch.bfloat16
+    )
+    model.config.use_cache = False
+    print("Model and tokenizer loaded successfully!")
+
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules="all-linear",
+    )
+    
+    training_args = SFTConfig(
+        output_dir=Config.OUTPUT_DIR,
+        num_train_epochs=3,
+        save_strategy="epoch",
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        learning_rate=2e-4,
+        logging_steps=25,
+        bf16=True, 
+        optim="paged_adamw_8bit",
+        lr_scheduler_type="cosine",
+        max_length=Config.MAX_LENGTH,
+        packing=True,
+        report_to='none',
+        eval_strategy="epoch", 
+    )
+
+    print("Initializing SFTTrainer...")
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset['train'],
+        eval_dataset=dataset['test'],
+        peft_config=lora_config,
+        formatting_func=formatting_prompts_func,
+    )
+
+    print("\n--- STARTING TRAINING ---")
+    trainer.train()
+    print("--- TRAINING COMPLETE ---\n")
+    
+    print("Saving final model...")
+    final_model_path = os.path.join(Config.OUTPUT_DIR, "final_model")
+    trainer.save_model(final_model_path)
+    print(f"Final model saved to {final_model_path}")
+
+if __name__ == "__main__":
+    main()
+
 ===== DIRECTORY TREE =====
 ./
+    .env.example
+    .gitattributes
+    app.py
+    .streamlit/
+        secrets.toml
     dataset/
         Danh_muc_Bo_luat_va_Luat_cua_Viet_Nam_2909161046 (1).docx
         downloads/
@@ -1236,6 +1428,7 @@ if __name__ == "__main__":
         process_qa_finetuning_data.py
     step2/
         chatbot_rag_only.py
+        finetune_llm.py
     utils/
     vector_store/
         faiss_index_v2/
