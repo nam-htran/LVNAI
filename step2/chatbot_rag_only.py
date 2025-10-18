@@ -10,7 +10,7 @@ from langchain_community.document_compressors import FlashrankRerank
 class Config:
     DEBUG = True
     VECTOR_STORE_PATH = "vector_store/faiss_index_v2" 
-    EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL = "bkai-foundation-models/vietnamese-bi-encoder"
     RERANKER_MODEL = "ms-marco-MiniLM-L-12-v2"
     LLM_MODEL = "meta-llama/llama-3-8b-instruct"
     CANDIDATES_TO_RETRIEVE = 20

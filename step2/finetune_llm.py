@@ -6,7 +6,7 @@ from peft import LoraConfig
 import os
 
 class Config:
-    MODEL_NAME = "Qwen/Qwen2-0.5B-Instruct"
+    MODEL_NAME = "Qwen/Qwen2-7B-Instruct"
     DATASET_PATH = "dataset/result/finetuning_data.jsonl"
     OUTPUT_DIR = f"models/{MODEL_NAME.replace('/', '_')}-sft-finetuned-full"
     MAX_LENGTH = 1024

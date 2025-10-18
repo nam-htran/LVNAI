@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 PROCESSED_DATA_PATH = "dataset/result/rag_knowledge_base.csv"
 VECTOR_STORE_PATH = "vector_store/faiss_index_v2"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "bkai-foundation-models/vietnamese-bi-encoder"
 
 def main():
     print("Bắt đầu quá trình Indexing...")
