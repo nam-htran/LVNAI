@@ -10,6 +10,9 @@ load_in_4bit: true
 datasets:
   - path: dataset/result/finetuning_data.jsonl
     type: alpaca
+    ds_type: json 
+    field_map:
+      output: response
 dataset_prepared_path: last_run_prepared
 val_set_size: 0.05
 output_dir: models/qwen2-7b-axolotl-fsdp-output
