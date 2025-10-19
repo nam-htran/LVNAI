@@ -14,15 +14,15 @@ dataset_prepared_path:
 val_set_size: 0.05
 output_dir: models/qwen2-7b-axolotl-fsdp-output
 
-sequence_len: 2048
+sequence_len: 512
 sample_packing: true
 eval_sample_packing: true
 
 
 adapter: qlora
 lora_model_dir:
-lora_r: 32
-lora_alpha: 64
+lora_r: 8
+lora_alpha: 16
 lora_dropout: 0.05
 lora_target_linear: true
 
@@ -35,7 +35,7 @@ wandb_log_model:
 gradient_accumulation_steps: 4
 micro_batch_size: 1
 num_epochs: 4
-optimizer: adamw_torch_fused
+optimizer: paged_adamw_8bit
 lr_scheduler: cosine
 learning_rate: 0.0002
 
