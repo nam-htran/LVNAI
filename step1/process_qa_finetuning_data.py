@@ -38,7 +38,7 @@ def main():
             finetuning_data.append({
                 "instruction": question,
                 "context": "", 
-                "response": answer
+                "output": answer
             })
 
     print("\n--- KẾT QUẢ XỬ LÝ ---")
