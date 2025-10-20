@@ -1,4 +1,4 @@
-<img width="1933" height="917" alt="{CB42DC17-9F0A-4C20-AE82-195B90F60116}" src="https://github.com/user-attachments/assets/8cd0cd3b-c690-497f-847f-aa5832cec2ab" /># ⚖️ Trợ lý Pháp lý Việt Nam (LVNAI - Legal Virtual-assistant for Vietnamese AI)
+# ⚖️ Trợ lý Pháp lý Việt Nam (LVNAI - Legal Virtual-assistant for Vietnamese AI)
 
 Trợ lý Pháp lý Việt Nam là một chatbot AI được xây dựng để trả lời các câu hỏi liên quan đến hệ thống pháp luật của Việt Nam. Dự án sử dụng mô hình RAG (Retrieval-Augmented Generation) kết hợp với các mô hình ngôn ngữ lớn (LLM) để cung cấp câu trả lời chính xác, có trích dẫn nguồn từ cơ sở dữ liệu nội bộ là các văn bản luật.
 
@@ -10,7 +10,9 @@ Trợ lý Pháp lý Việt Nam là một chatbot AI được xây dựng để t
 <!-- Ví dụ: <p align="center"><img src="https://example.com/demo.gif" width="700"></p> -->
 <p align="center">
   <img width="1922" height="912" alt="{22A9C1B8-8583-403D-8A7F-803BB199FC2F}" src="https://github.com/user-attachments/assets/f0b8b78b-f334-40bd-ba3b-be20d7a37831" />
-  <img width="1933" height="917" alt="{CB42DC17-9F0A-4C20-AE82-195B90F60116}" src="https://github.com/user-attachments/assets/b0a77d1b-8815-46ff-9a36-bfe16139f8b0" />
+</p>
+<p align="center">
+  <img width="1926" height="915" alt="{7AA1377B-22DF-4000-B541-BBBFBB0F8B50}" src="https://github.com/user-attachments/assets/b336c5aa-f4b4-4a5d-b55b-a6ff073f1987" />
 </p>
 
 ---
