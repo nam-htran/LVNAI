@@ -33,7 +33,6 @@ def load_reranker():
 
 # --- CORE LOGIC FUNCTIONS ---
 def get_rag_context(prompt: str, retriever, reranker) -> str:
-    # ... (Hàm này giữ nguyên như cũ, đã hoạt động tốt)
     retrieved_docs = retriever.invoke(prompt)
     if not retrieved_docs: return ""
     rerank_input = [[prompt, doc.page_content] for doc in retrieved_docs]
@@ -44,10 +43,6 @@ def get_rag_context(prompt: str, retriever, reranker) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 def find_web_sources_with_gemini(question: str) -> str:
-    """
-    Sử dụng chính Gemini Flash 2.0 để "tìm kiếm" link.
-    LƯU Ý: Chức năng này sẽ tạo ra các link không có thật (hallucination).
-    """
     st.warning("Đang yêu cầu Gemini tự 'tìm kiếm' link. Kết quả có thể không chính xác.")
     prompt = (
         "You are a web search assistant. Your ONLY task is to find 5 real, existing, and highly relevant Vietnamese web pages for the following query. "
@@ -66,8 +61,6 @@ def find_web_sources_with_gemini(question: str) -> str:
     except Exception as e:
         return f"> Lỗi khi yêu cầu Gemini tìm link: {e}"
 
-# --- PROMPT & FORMATTING FUNCTIONS ---
-# (format_rag_prompt và replace_citations_with_links giữ nguyên như cũ)
 def format_rag_prompt(context: str, question: str) -> str:
     system_prompt = (
         "Bạn là một trợ lý pháp lý AI chuyên nghiệp và thân thiện tại Việt Nam..."
@@ -82,7 +75,6 @@ def replace_citations_with_links(text: str) -> str:
         return f'<a href="{url}" target="_blank">{match.group(0)}</a>'
     return re.sub(pattern, create_search_link, text)
 
-# --- STREAMLIT UI ---
 st.set_page_config(page_title="⚖️ Trợ lý Pháp lý", layout="wide")
 
 with st.spinner("Đang tải tài nguyên..."):
