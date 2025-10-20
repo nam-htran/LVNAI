@@ -35,7 +35,6 @@ def load_reranker():
 
 # --- CORE LOGIC FUNCTIONS ---
 def get_rag_context(prompt: str, retriever, reranker) -> str:
-    # ... (Hàm này giữ nguyên như cũ, đã hoạt động tốt)
     retrieved_docs = retriever.invoke(prompt)
     if not retrieved_docs: return ""
     rerank_input = [[prompt, doc.page_content] for doc in retrieved_docs]
@@ -46,10 +45,6 @@ def get_rag_context(prompt: str, retriever, reranker) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 def find_web_sources_with_gemini(question: str) -> str:
-    """
-    Sử dụng chính Gemini Flash 2.0 để "tìm kiếm" link.
-    LƯU Ý: Chức năng này sẽ tạo ra các link không có thật (hallucination).
-    """
     st.warning("Đang yêu cầu Gemini tự 'tìm kiếm' link. Kết quả có thể không chính xác.")
     prompt = (
         "You are a web search assistant. Your ONLY task is to find 5 real, existing, and highly relevant Vietnamese web pages for the following query. "
@@ -68,8 +63,6 @@ def find_web_sources_with_gemini(question: str) -> str:
     except Exception as e:
         return f"> Lỗi khi yêu cầu Gemini tìm link: {e}"
 
-# --- PROMPT & FORMATTING FUNCTIONS ---
-# (format_rag_prompt và replace_citations_with_links giữ nguyên như cũ)
 def format_rag_prompt(context: str, question: str) -> str:
     system_prompt = (
         "Bạn là một trợ lý pháp lý AI chuyên nghiệp và thân thiện tại Việt Nam..."
@@ -84,7 +77,6 @@ def replace_citations_with_links(text: str) -> str:
         return f'<a href="{url}" target="_blank">{match.group(0)}</a>'
     return re.sub(pattern, create_search_link, text)
 
-# --- STREAMLIT UI ---
 st.set_page_config(page_title="⚖️ Trợ lý Pháp lý", layout="wide")
 
 with st.spinner("Đang tải tài nguyên..."):
@@ -136,45 +128,6 @@ if user_prompt := st.chat_input("Nhập câu hỏi của bạn..."):
         message_placeholder.write(final_response, unsafe_allow_html=True)
         
         st.session_state.history.append({"role": "assistant", "content": final_response})
-
-===== .\dataset\result\finetuning_packed_data\dataset_info.json =====
-{
-  "citation": "",
-  "description": "",
-  "features": {
-    "input_ids": {
-      "feature": {
-        "dtype": "int32",
-        "_type": "Value"
-      },
-      "_type": "List"
-    },
-    "attention_mask": {
-      "feature": {
-        "dtype": "int8",
-        "_type": "Value"
-      },
-      "_type": "List"
-    }
-  },
-  "homepage": "",
-  "license": ""
-}
-
-===== .\dataset\result\finetuning_packed_data\state.json =====
-{
-  "_data_files": [
-    {
-      "filename": "data-00000-of-00001.arrow"
-    }
-  ],
-  "_fingerprint": "1abcb0e3ff961f23",
-  "_format_columns": null,
-  "_format_kwargs": {},
-  "_format_type": null,
-  "_output_all_columns": false,
-  "_split": null
-}
 
 ===== .\step1\check_enough_data.py =====
 from docx import Document
@@ -448,77 +401,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-===== .\step1\prepare_packed_dataset.py =====
-import os
-import torch
-from datasets import load_dataset
-from transformers import AutoTokenizer
-from tqdm import tqdm
-
-class Config:
-    MODEL_NAME = "Qwen/Qwen2-7B-Instruct"
-    DATASET_PATH = "dataset/result/finetuning_data.jsonl"
-    PROCESSED_DATASET_DIR = "dataset/result/finetuning_packed_data"
-    MAX_LENGTH = 1024
-
-def formatting_prompts_func(example):
-    text = (
-        f"<|im_start|>system\nBạn là một trợ lý pháp lý chuyên nghiệp.<|im_end|>\n"
-        f"<|im_start|>user\n{example['instruction']}<|im_end|>\n"
-        f"<|im_start|>assistant\n{example['response']}<|im_end|>"
-    )
-    return {"text": text + "<|im_end|>"}
-
-def main():
-    print(f"--- Bắt đầu xử lý và đóng gói dataset ---")
-    print(f"Model Tokenizer: {Config.MODEL_NAME}")
-    print(f"Max Sequence Length: {Config.MAX_LENGTH}")
-
-    tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    dataset = load_dataset("json", data_files=Config.DATASET_PATH, split="train")
-    print(f"Đã tải {len(dataset)} mẫu dữ liệu gốc.")
-
-    dataset = dataset.map(
-        formatting_prompts_func,
-        num_proc=os.cpu_count()
-    )
-    print("Đã áp dụng định dạng prompt cho toàn bộ dataset.")
-
-    all_token_ids = []
-    for sample in tqdm(dataset, desc="Tokenizing and concatenating"):
-        tokenized_output = tokenizer(sample['text'], truncation=False, add_special_tokens=False)
-        all_token_ids.extend(tokenized_output['input_ids'])
-
-    print(f"\nTổng cộng có {len(all_token_ids)} tokens trong toàn bộ dataset.")
-
-    packed_examples = []
-    total_chunks = len(all_token_ids) // Config.MAX_LENGTH
-    for i in tqdm(range(total_chunks), desc="Packing sequences"):
-        start_index = i * Config.MAX_LENGTH
-        end_index = start_index + Config.MAX_LENGTH
-        chunk = all_token_ids[start_index:end_index]
-        packed_examples.append({
-            'input_ids': chunk,
-            'attention_mask': [1] * len(chunk)
-        })
-
-    from datasets import Dataset
-    processed_dataset = Dataset.from_list(packed_examples)
-    print(f"Đã đóng gói thành công thành {len(processed_dataset)} mẫu, mỗi mẫu dài {Config.MAX_LENGTH} tokens.")
-
-    processed_dataset = processed_dataset.shuffle(seed=42)
-    processed_dataset.save_to_disk(Config.PROCESSED_DATASET_DIR)
-
-    print(f"\n--- HOÀN TẤT ---")
-    print(f"Dataset đã xử lý và lưu tại: '{Config.PROCESSED_DATASET_DIR}'")
-    print("Bây giờ bạn có thể chạy script fine-tuning.")
-
-if __name__ == "__main__":
-    main()
-
 ===== .\step1\preprocess_law_data.py =====
 import os
 import re
@@ -693,7 +575,7 @@ def main():
             finetuning_data.append({
                 "instruction": question,
                 "context": "", 
-                "response": answer
+                "output": answer
             })
 
     print("\n--- KẾT QUẢ XỬ LÝ ---")
@@ -837,7 +719,7 @@ if __name__ == "__main__":
 
 ===== .\step2\finetune_llm.py =====
 import torch
-from datasets import load_from_disk, DatasetDict
+from datasets import load_dataset, DatasetDict
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig
@@ -845,19 +727,30 @@ import os
 
 class Config:
     MODEL_NAME = "Qwen/Qwen2-7B-Instruct"
-    PROCESSED_DATASET_DIR = "dataset/result/finetuning_packed_data"
+    DATASET_PATH = "dataset/result/finetuning_data.jsonl"
     OUTPUT_DIR = f"models/{MODEL_NAME.replace('/', '_')}-sft-finetuned-full"
     MAX_LENGTH = 1024
 
+def formatting_prompts_func(example):
+    text = (
+        f"<|im_start|>system\nBạn là một trợ lý pháp lý chuyên nghiệp.<|im_end|>\n"
+        f"<|im_start|>user\n{example['instruction']}<|im_end|>\n"
+        f"<|im_start|>assistant\n{example['response']}<|im_end|>"
+    )
+    return text
+
 def main():
-    print("--- Starting FULL TRAINING with PRE-PACKED dataset ---")
-    full_dataset = load_from_disk(Config.PROCESSED_DATASET_DIR)
-    train_test_split = full_dataset.train_test_split(test_size=0.05, seed=42)
+    print("--- Starting FULL TRAINING: SFT with Trainer-led device placement ---")
+    
+    full_dataset = load_dataset("json", data_files=Config.DATASET_PATH, split="train")
+    
+    train_test_split = full_dataset.train_test_split(test_size=0.05)
     dataset = DatasetDict({
         'train': train_test_split['train'],
         'test': train_test_split['test']
     })
-    print(f"Dataset pre-packed loaded and split: {len(dataset['train'])} training samples, {len(dataset['test'])} validation samples.")
+    print(f"Dataset loaded and split: {len(dataset['train'])} training samples, {len(dataset['test'])} validation samples.")
+
 
     print(f"Loading base model: {Config.MODEL_NAME}")
     tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
@@ -892,7 +785,7 @@ def main():
         optim="paged_adamw_8bit",
         lr_scheduler_type="cosine",
         max_length=Config.MAX_LENGTH,
-        packing=False,
+        packing=True,
         report_to='none',
         eval_strategy="epoch", 
     )
@@ -904,7 +797,7 @@ def main():
         train_dataset=dataset['train'],
         eval_dataset=dataset['test'],
         peft_config=lora_config,
-        dataset_text_field="input_ids",
+        formatting_func=formatting_prompts_func,
     )
 
     print("\n--- STARTING TRAINING ---")
@@ -1505,16 +1398,11 @@ if __name__ == "__main__":
         result/
             finetuning_data.jsonl
             rag_knowledge_base.csv
-            finetuning_packed_data/
-                data-00000-of-00001.arrow
-                dataset_info.json
-                state.json
     step1/
         check_enough_data.py
         convert_doc_to_docx.py
         crawl_data.py
         create_vector_store.py
-        prepare_packed_dataset.py
         preprocess_law_data.py
         process_qa_finetuning_data.py
     step2/
